@@ -2,15 +2,44 @@ package service
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"necore/dao"
 	"necore/model"
+	"necore/util"
+	"necore/ws"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 )
+
+func generateStoredFilename(original string) (string, error) {
+	safeName, err := util.SafeFilename(original)
+	if err != nil {
+		return "", err
+	}
+
+	extension := strings.ToLower(filepath.Ext(safeName))
+
+	allowedExtensions := map[string]bool{
+		".png":  true,
+		".jpg":  true,
+		".jpeg": true,
+		".webp": true,
+		".pdf":  true,
+		".txt":  true,
+	}
+
+	if !allowedExtensions[extension] {
+		return "", errors.New("unsupported file extension")
+	}
+
+	return uuid.NewString() + extension, nil
+}
 
 func checkNewsPermission(c *fiber.Ctx) bool {
 	// Check if user is admin or news_admin
@@ -63,9 +92,10 @@ func UpdateArticle(c *fiber.Ctx) error {
 		Content string `json:"content"`
 	}
 	type Payload struct {
-		Entity   PayloadEntity    `json:"entity"`
-		Content  []PayloadContent `json:"content"`
-		Category string           `json:"category"`
+		Entity     PayloadEntity    `json:"entity"`
+		Content    []PayloadContent `json:"content"`
+		Category   string           `json:"category"`
+		DoesNotify bool             `json:"doesNotify"`
 	}
 	payload := new(Payload)
 	if err := c.BodyParser(payload); err != nil {
@@ -92,6 +122,13 @@ func UpdateArticle(c *fiber.Ctx) error {
 
 	if err := dao.UpdateArticle(newArticle); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err})
+	}
+
+	if payload.DoesNotify {
+		go ws.GlobalHub.Broadcast(fiber.Map{
+			"event": "article_updated",
+			"data":  newArticle,
+		})
 	}
 
 	return c.SendStatus(fiber.StatusOK)
@@ -200,13 +237,17 @@ func UploadArticleFile(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err})
 	}
-	if err := os.MkdirAll(fmt.Sprintf("./contents/%s", id), os.ModePerm); err != nil {
+	if err := os.MkdirAll(fmt.Sprintf("./contents/%s", id), 0o750); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err})
 	}
-	if err := c.SaveFile(file, fmt.Sprintf("./contents/%s/%s", id, file.Filename)); err != nil {
+	storedName, err := generateStoredFilename(file.Filename)
+	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err})
 	}
-	return c.JSON(fiber.Map{"url": fmt.Sprintf("/contents/%s/%s", id, file.Filename)})
+	if err := c.SaveFile(file, fmt.Sprintf("./contents/%s/%s", id, storedName)); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err})
+	}
+	return c.JSON(fiber.Map{"url": fmt.Sprintf("/contents/%s/%s", id, storedName)})
 }
 
 func DeleteArticleFile(c *fiber.Ctx) error {
@@ -214,18 +255,35 @@ func DeleteArticleFile(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Forbidden"})
 	}
 
-	// id := c.Params("id") // It is included in the url
+	id := c.Params("id")
+
 	type Payload struct {
-		Url string `json:"url"`
+		Filename string `json:"filename"`
 	}
-	payload := new(Payload)
-	if err := c.BodyParser(payload); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err})
+
+	var payload Payload
+	if err := c.BodyParser(&payload); err != nil {
+		return c.Status(fiber.StatusBadRequest).
+			JSON(fiber.Map{"error": "Invalid request body"})
 	}
-	if err := os.Remove(fmt.Sprintf("./%s", payload.Url)); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err})
+
+	target, err := util.SafeContentPath("./contents", id, payload.Filename)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).
+			JSON(fiber.Map{"error": "Invalid filename"})
 	}
-	return c.SendStatus(fiber.StatusOK)
+
+	if err := os.Remove(target); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return c.Status(fiber.StatusNotFound).
+				JSON(fiber.Map{"error": "File not found"})
+		}
+
+		return c.Status(fiber.StatusInternalServerError).
+			JSON(fiber.Map{"error": "Internal server error"})
+	}
+
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
 func DeleteArticle(c *fiber.Ctx) error {
