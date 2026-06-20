@@ -98,12 +98,12 @@ func UpdateArticle(c *fiber.Ctx) error {
 	}
 	payload := new(Payload)
 	if err := c.BodyParser(payload); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 
 	newContent, err := json.Marshal(payload.Content)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 
 	newArticle := model.Article{
@@ -120,7 +120,7 @@ func UpdateArticle(c *fiber.Ctx) error {
 	}
 
 	if err := dao.UpdateArticle(newArticle); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 
 	if payload.DoesNotify {
@@ -138,7 +138,7 @@ func GetArticleById(c *fiber.Ctx) error {
 
 	article, err := dao.GetArticle(id)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	type PayloadEntity struct {
 		Pin     bool   `json:"pin"`
@@ -182,7 +182,7 @@ func GetArticleCountByCategory(c *fiber.Ctx) error {
 	// target: "information" | "magazine" | "notice" | "activity" | "document"
 	count, err := dao.GetArticleCountByCategory(category)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"total": count})
 }
@@ -196,11 +196,11 @@ func GetArticleList(c *fiber.Ctx) error {
 	}
 	payload := new(Payload)
 	if err := c.BodyParser(payload); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	articles, err := dao.GetArticleList(payload.Target, payload.Page, payload.PageSize, payload.Pin)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	type Entity struct {
 		Id      string `json:"id"`
@@ -234,21 +234,21 @@ func UploadArticleFile(c *fiber.Ctx) error {
 	id := c.Params("id")
 	file, err := c.FormFile("file")
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	if err := os.MkdirAll(fmt.Sprintf("./contents/%s", id), 0o750); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	storedName, err := generateStoredFilename(file.Filename)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	contentPath, err := util.SafeContentPath("./contents", id, storedName)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	if err := c.SaveFile(file, contentPath); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"url": fmt.Sprintf("/contents/%s/%s", id, storedName)})
 }
@@ -296,7 +296,7 @@ func DeleteArticle(c *fiber.Ctx) error {
 
 	id := c.Params("id")
 	if err := dao.DeleteArticle(id); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.SendStatus(fiber.StatusOK)
 }

@@ -18,8 +18,30 @@ func CreateArticle(id string) error {
 }
 
 func UpdateArticle(updatedArticle model.Article) error {
-	db := database.GetArticleDatabase()
-	return db.Save(&updatedArticle).Error
+	result := database.GetArticleDatabase().
+		Model(&model.Article{}).
+		Where("id = ?", updatedArticle.Id).
+		Updates(map[string]any{
+			"pin":      updatedArticle.Pin,
+			"title":    updatedArticle.Title,
+			"brief":    updatedArticle.Brief,
+			"date":     updatedArticle.Date,
+			"end_date": updatedArticle.EndDate,
+			"image":    updatedArticle.Image,
+			"content":  updatedArticle.Content,
+			"author":   updatedArticle.Author,
+			"category": updatedArticle.Category,
+		})
+
+	if result.Error != nil {
+		return result.Error
+	}
+
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("Article not found")
+	}
+
+	return nil
 }
 
 func GetArticle(id string) (*model.Article, error) {
@@ -67,6 +89,16 @@ func GetArticleList(target string, page int, pageSize int, pin bool) ([]model.Ar
 
 func DeleteArticle(id string) error {
 	db := database.GetArticleDatabase()
-	os.RemoveAll(fmt.Sprintf("./contents/%s", id))
-	return db.Where(&model.Article{Id: id}).Delete(&model.Article{}).Error
+
+	result := db.Where("id = ?", id).Delete(&model.Article{})
+	if result.Error != nil {
+		return result.Error
+	}
+
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("Article not found")
+	}
+
+	_ = os.RemoveAll(fmt.Sprintf("./contents/%s", id))
+	return nil
 }

@@ -78,13 +78,20 @@ func GetUserByUsername(u string) (*model.User, error) {
 }
 
 func AddUserByUsername(username string, password string) error {
-	hash, _ := hashPassword(password)
-	db := database.GetUserDatabase()
-	user := model.User{
-		Username: username,
-		Password: hash,
+	hash, err := hashPassword(password)
+	if err != nil {
+		return err
 	}
-	return db.Create(&user).Error
+
+	user := model.User{
+		Username:     username,
+		Password:     hash,
+		Group:        `[]`,
+		Tags:         `[]`,
+		TokenVersion: 1,
+	}
+
+	return database.GetUserDatabase().Create(&user).Error
 }
 
 func GetAllUsers() ([]model.User, error) {

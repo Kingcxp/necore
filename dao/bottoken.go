@@ -3,9 +3,13 @@ package dao
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"necore/database"
 	"necore/model"
 	"necore/util"
+
+	"gorm.io/gorm"
 )
 
 func CreateBotToken(name string) (*model.BotToken, error) {
@@ -39,10 +43,17 @@ func GetBotTokens() []model.BotToken {
 
 func GetBotToken(name string) (*model.BotToken, error) {
 	var token model.BotToken
-	db := database.GetBotTokenDatabase()
-	if err := db.Where(&model.BotToken{Name: name}).First(&token).Error; err != nil {
+	err := database.GetBotTokenDatabase().
+		Where("name = ?", name).
+		First(&token).Error
+
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, fmt.Errorf("bot token '%s' not found", name)
+	}
+	if err != nil {
 		return nil, err
 	}
+
 	return &token, nil
 }
 

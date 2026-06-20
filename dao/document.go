@@ -2,6 +2,7 @@ package dao
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"necore/database"
 	"necore/model"
@@ -11,6 +12,61 @@ import (
 	"gorm.io/gorm"
 )
 
+func validateDocumentParent(tx *gorm.DB, nodeID string, parentID string) error {
+	if parentID == "" {
+		return fmt.Errorf("Invalid parent ID")
+	}
+
+	if parentID == nodeID {
+		return fmt.Errorf("Parent ID cannot be the same as the node ID")
+	}
+
+	if parentID == "root" {
+		return nil
+	}
+
+	var parent model.DocumentNode
+	err := tx.Where("id = ?", parentID).First(&parent).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return fmt.Errorf("Record not found")
+	}
+	if err != nil {
+		return err
+	}
+
+	if !parent.IsFolder {
+		return fmt.Errorf("Parent ID must be a folder")
+	}
+
+	seen := map[string]struct{}{
+		nodeID: {},
+	}
+
+	current := parent
+
+	for {
+		if _, exists := seen[current.Id]; exists {
+			return fmt.Errorf("Circular reference detected")
+		}
+		seen[current.Id] = struct{}{}
+
+		if current.ParentId == "" || current.ParentId == "root" {
+			return nil
+		}
+
+		var next model.DocumentNode
+		err := tx.Where("id = ?", current.ParentId).First(&next).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("Record not found")
+		}
+		if err != nil {
+			return err
+		}
+
+		current = next
+	}
+}
+
 func getCurrentTime() string {
 	currenttime := time.Now()
 	newtime := fmt.Sprintf("%d-%s-%d %d:%d:%d", currenttime.Year(), currenttime.Month().String(), currenttime.Day(), currenttime.Hour(), currenttime.Minute(), currenttime.Second())
@@ -19,40 +75,82 @@ func getCurrentTime() string {
 
 func CreateDocumentNode(parentId string, isFolder bool, private bool, name string, id string, username string) error {
 	db := database.GetDocumentDatabase()
-	if parentId == id {
-		return fmt.Errorf("ParentId and Id cannot be the same")
-	}
-	contributors, _ := json.Marshal([]string{username})
-	node := model.DocumentNode{
-		ParentId:     parentId,
-		IsFolder:     isFolder,
-		Private:      private,
-		Name:         name,
-		Id:           id,
-		Contributors: string(contributors),
-		UpdateTime:   getCurrentTime(),
-	}
-	return db.Create(&node).Error
+
+	return db.Transaction(func(tx *gorm.DB) error {
+		if err := validateDocumentParent(tx, id, parentId); err != nil {
+			return err
+		}
+
+		contributors, _ := json.Marshal([]string{username})
+		node := model.DocumentNode{
+			ParentId:     parentId,
+			IsFolder:     isFolder,
+			Private:      private,
+			Name:         name,
+			Id:           id,
+			Contributors: string(contributors),
+			UpdateTime:   getCurrentTime(),
+		}
+
+		return tx.Create(&node).Error
+	})
 }
 
 func DeleteDocumentNode(id string) error {
 	db := database.GetDocumentDatabase()
-	var node model.DocumentNode
-	db.Where(&model.DocumentNode{Id: id}).First(&node)
 
-	// Recursively delete all children
+	var ids []string
+	if err := collectDocumentNodeIDs(db, id, &ids); err != nil {
+		return err
+	}
+
+	if len(ids) == 0 {
+		return fmt.Errorf("No document nodes found")
+	}
+
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		result := tx.Where("id IN ?", ids).Delete(&model.DocumentNode{})
+		if result.Error != nil {
+			return result.Error
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	for _, nodeID := range ids {
+		_ = os.RemoveAll(fmt.Sprintf("./contents/%s", nodeID))
+	}
+
+	return nil
+}
+
+func collectDocumentNodeIDs(db *gorm.DB, id string, ids *[]string) error {
+	var node model.DocumentNode
+	err := db.Where("id = ?", id).First(&node).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return fmt.Errorf("Record not found")
+	}
+	if err != nil {
+		return err
+	}
+
+	*ids = append(*ids, node.Id)
+
 	if node.IsFolder {
 		var children []model.DocumentNode
-		db.Where(&model.DocumentNode{ParentId: id}).Find(&children)
-		for _, child := range children {
-			DeleteDocumentNode(child.Id)
-			db.Where(&model.DocumentNode{Id: child.Id}).Delete(&model.DocumentNode{})
+		if err := db.Where("parent_id = ?", node.Id).Find(&children).Error; err != nil {
+			return err
 		}
-	} else {
-		// Delete Files
-		os.RemoveAll(fmt.Sprintf("./contents/%s", id))
+
+		for _, child := range children {
+			if err := collectDocumentNodeIDs(db, child.Id, ids); err != nil {
+				return err
+			}
+		}
 	}
-	return db.Where(&model.DocumentNode{Id: id}).Delete(&model.DocumentNode{}).Error
+
+	return nil
 }
 
 func UpdateDocumentNodeName(id string, name string) error {
@@ -109,13 +207,38 @@ func checkCyclicDocumentNode(parentId string, id string, db *gorm.DB) bool {
 
 func UpdateDocumentNodeParentId(id string, parentId string) error {
 	db := database.GetDocumentDatabase()
-	if parentId == id {
-		return fmt.Errorf("ParentId and Id cannot be the same")
-	}
-	if checkCyclicDocumentNode(parentId, id, db) {
-		return fmt.Errorf("Cyclic dependency detected")
-	}
-	return db.Model(&model.DocumentNode{}).Where(&model.DocumentNode{Id: id}).Updates(model.DocumentNode{ParentId: parentId}).Error
+
+	return db.Transaction(func(tx *gorm.DB) error {
+		var node model.DocumentNode
+		err := tx.Where("id = ?", id).First(&node).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("Record not found")
+		}
+		if err != nil {
+			return err
+		}
+
+		if err := validateDocumentParent(tx, id, parentId); err != nil {
+			return err
+		}
+
+		result := tx.Model(&model.DocumentNode{}).
+			Where("id = ?", id).
+			Updates(map[string]any{
+				"parent_id":   parentId,
+				"update_time": getCurrentTime(),
+			})
+
+		if result.Error != nil {
+			return result.Error
+		}
+
+		if result.RowsAffected == 0 {
+			return fmt.Errorf("Record not found")
+		}
+
+		return nil
+	})
 }
 
 func GetDocumentNodeChildren(id string, private bool) ([]model.DocumentNode, error) {

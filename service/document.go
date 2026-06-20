@@ -305,18 +305,18 @@ func UploadDocumentFile(c *fiber.Ctx) error {
 		})
 	}
 	if err := os.MkdirAll(fmt.Sprintf("./contents/%s", id), 0o750); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	storedName, err := generateStoredFilename(file.Filename)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	contentPath, err := util.SafeContentPath("./contents", id, storedName)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	if err := c.SaveFile(file, contentPath); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"url": fmt.Sprintf("/contents/%s/%s", id, storedName)})
 }

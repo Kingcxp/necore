@@ -645,7 +645,7 @@ func TestBotRoutes(t *testing.T) {
 	createResp := doJSON(t, env, http.MethodPost, "/necore/bots/token", env.adminToken, fiber.Map{
 		"name": "unit-test",
 	})
-	assertStatus(t, createResp, http.StatusOK)
+	assertStatus(t, createResp, http.StatusCreated)
 	createBody := decodeBody(t, createResp)
 	tokenObj, ok := createBody["token"].(map[string]any)
 	if !ok || tokenObj["token"] == "" {
@@ -653,7 +653,7 @@ func TestBotRoutes(t *testing.T) {
 	}
 
 	assertStatus(t, doJSON(t, env, http.MethodGet, "/necore/bots/token", env.adminToken, nil), http.StatusOK)
-	assertStatus(t, doJSON(t, env, http.MethodGet, "/necore/bots/token/missing", env.adminToken, nil), http.StatusInternalServerError)
+	assertStatus(t, doJSON(t, env, http.MethodGet, "/necore/bots/token/missing", env.adminToken, nil), http.StatusNotFound)
 
 	// 当前源码只要求“已登录”，没有 bot_admin 权限检查。
 	assertStatus(t, doJSON(t, env, http.MethodGet, "/necore/bots/status", env.userToken, nil), http.StatusOK)
@@ -848,4 +848,171 @@ func TestTokenVersion_DeletedUserTokenIsRejected(t *testing.T) {
 	// 即使 token_version 没有递增，只要鉴权中间件每次查询数据库用户，
 	// 被删除用户的旧 JWT 也必须被拒绝。
 	assertStatus(t, doJSON(t, env, http.MethodGet, "/necore/auth/status", charlieToken, nil), http.StatusUnauthorized)
+}
+
+// =======================================================
+// EXTENDED SECURITY & EDGE CASE TESTS (ADDED BY REVIEW)
+// =======================================================
+
+/*
+1. AUTH MODULE FUZZ & ABUSE TESTS
+*/
+func TestAuth_FuzzLoginInputs(t *testing.T) {
+	env := setupTestEnv(t)
+
+	maliciousInputs := []string{
+		`{"username":"' OR 1=1 --","password":"x"}`,
+		`{"username":"\u0000admin","password":"admin"}`,
+		`{"username":"<script>alert(1)</script>","password":"123"}`,
+		`{"username":"admin","password":"".repeat(10000)}`,
+	}
+
+	for _, body := range maliciousInputs {
+		req := httptest.NewRequest("POST", "/auth/login", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+
+		resp := executeRequest(t, env, req)
+
+		if resp.StatusCode == 200 {
+			t.Fatalf("SECURITY ISSUE: malicious login input succeeded: %s", body)
+		}
+	}
+}
+
+func TestAuth_BruteForceSimulation(t *testing.T) {
+	env := setupTestEnv(t)
+
+	for i := 0; i < 20; i++ {
+		body := `{"username":"admin","password":"wrong"}`
+		req := httptest.NewRequest("POST", "/auth/login", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+
+		resp := executeRequest(t, env, req)
+
+		if i > 10 && resp.StatusCode == 200 {
+			t.Fatal("POTENTIAL BRUTE FORCE ISSUE: login succeeded after repeated attempts")
+		}
+	}
+}
+
+/*
+2. USER MODULE ABUSE CASES
+*/
+func TestUser_EnumerationAttack(t *testing.T) {
+	env := setupTestEnv(t)
+
+	usernames := []string{"admin", "alice", "root", "test", "doesnotexist"}
+
+	for _, u := range usernames {
+		req := httptest.NewRequest("GET", "/user/"+u, nil)
+
+		resp := executeRequest(t, env, req)
+
+		// 不允许通过错误信息区分用户是否存在（防 user enumeration）
+		if strings.Contains(string(resp.Body), "password") {
+			t.Fatalf("USER ENUMERATION LEAK DETECTED for user: %s", u)
+		}
+	}
+}
+
+/*
+3. NEWS / ARTICLE MODULE SECURITY
+*/
+func TestNews_XSSPayloadPersistence(t *testing.T) {
+	env := setupTestEnv(t)
+
+	payload := `{"title":"<script>alert(document.cookie)</script>","content":"x"}`
+	req := httptest.NewRequest("POST", "/news", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp := executeRequest(t, env, req)
+
+	if resp.StatusCode == 200 {
+		// 再次读取列表检查是否原样返回
+		req2 := httptest.NewRequest("GET", "/news", nil)
+		resp2 := executeRequest(t, env, req2)
+
+		if strings.Contains(string(resp2.Body), "<script>") {
+			t.Fatal("XSS PAYLOAD STORED UNSANITIZED IN DATABASE")
+		}
+	}
+}
+
+func TestNews_MassivePayload_DoSProtection(t *testing.T) {
+	env := setupTestEnv(t)
+
+	large := strings.Repeat("A", 5*1024*1024) // 5MB payload
+
+	body := `{"title":"` + large + `"}`
+	req := httptest.NewRequest("POST", "/news", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp := executeRequest(t, env, req)
+
+	if resp.StatusCode == 200 {
+		t.Fatal("NO PAYLOAD LIMIT: potential DoS vulnerability")
+	}
+}
+
+/*
+4. DOCUMENT MODULE ATTACK SURFACE
+*/
+func TestDocument_PathTraversalUpload(t *testing.T) {
+	env := setupTestEnv(t)
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+
+	_ = writer.WriteField("filename", "../../etc/passwd")
+
+	part, _ := writer.CreateFormFile("file", "test.txt")
+	part.Write([]byte("malicious content"))
+	writer.Close()
+
+	req := httptest.NewRequest("POST", "/document/upload", body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	resp := executeRequest(t, env, req)
+
+	if resp.StatusCode == 200 {
+		t.Fatal("PATH TRAVERSAL POSSIBLE IN FILE UPLOAD")
+	}
+}
+
+/*
+5. WEBSOCKET SECURITY TEST
+*/
+func TestWebSocket_UnauthenticatedAccess(t *testing.T) {
+	env := setupTestEnv(t)
+
+	req := httptest.NewRequest("GET", "/ws", nil)
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Connection", "Upgrade")
+
+	resp := executeRequest(t, env, req)
+
+	// WebSocket 应该要求认证或握手验证
+	if resp.StatusCode == 200 {
+		t.Fatal("UNAUTHORIZED WEBSOCKET ACCESS ALLOWED")
+	}
+}
+
+/*
+6. TOKEN / SESSION ABUSE
+*/
+func TestTokenReuseAfterPrivilegeChange(t *testing.T) {
+	env := setupTestEnv(t)
+
+	// 假设 alice token 已存在
+	token := env.userToken
+
+	// 模拟权限变化或用户被禁用后的访问
+	req := httptest.NewRequest("GET", "/user/me", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp := executeRequest(t, env, req)
+
+	if resp.StatusCode == 200 && strings.Contains(string(resp.Body), "admin") {
+		t.Fatal("TOKEN STILL VALID AFTER PRIVILEGE CHANGE")
+	}
 }

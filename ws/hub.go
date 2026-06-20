@@ -2,6 +2,7 @@ package ws
 
 import (
 	"fmt"
+	"html"
 	"necore/config"
 	"strconv"
 	"sync"
@@ -10,24 +11,35 @@ import (
 	"github.com/gofiber/contrib/websocket"
 )
 
+// escapeLogText escapes dynamic text before it is placed inside an HTML log
+// fragment. The dashboard currently receives logs as HTML strings, so every
+// untrusted value must be escaped before it is wrapped by the colored span.
+func escapeLogText(text string) string {
+	return html.EscapeString(text)
+}
+
+func coloredLogMsg(color string, text string) string {
+	return "<span style=\"color: " + color + ";\">" + escapeLogText(text) + "</span>"
+}
+
 func INFLogMsg(text string) string {
-	return "<span style=\"color: #409EFF;\">" + text + "</span>"
+	return coloredLogMsg("#409EFF", text)
 }
 
 func SUCLogMsg(text string) string {
-	return "<span style=\"color: #67C23A;\">" + text + "</span>"
+	return coloredLogMsg("#67C23A", text)
 }
 
 func WRNLogMsg(text string) string {
-	return "<span style=\"color: #E6A23C;\">" + text + "</span>"
+	return coloredLogMsg("#E6A23C", text)
 }
 
 func ERRLogMsg(text string) string {
-	return "<span style=\"color: #F56C6C;\">" + text + "</span>"
+	return coloredLogMsg("#F56C6C", text)
 }
 
 func DBGLogMsg(text string) string {
-	return "<span style=\"color: #909399;\">" + text + "</span>"
+	return coloredLogMsg("#909399", text)
 }
 
 type Client struct {
@@ -162,11 +174,25 @@ func (h *Hub) Broadcast(message interface{}) {
 	}
 }
 
+// safeClientForDashboard returns a shallow copy whose display fields are safe
+// for HTML rendering. It keeps the JSON field names and types unchanged while
+// avoiding mutation of the internal Client object used by the WebSocket hub.
+func safeClientForDashboard(c *Client) *Client {
+	if c == nil {
+		return nil
+	}
+
+	copied := *c
+	copied.Identifier = escapeLogText(copied.Identifier)
+	copied.TokenName = escapeLogText(copied.TokenName)
+	return &copied
+}
+
 func (h *Hub) GetDashboardStats() ([]*Client, []string) {
 	h.mu.RLock()
 	clients := make([]*Client, 0, len(h.Clients))
 	for _, c := range h.Clients {
-		clients = append(clients, c)
+		clients = append(clients, safeClientForDashboard(c))
 	}
 	h.mu.RUnlock()
 

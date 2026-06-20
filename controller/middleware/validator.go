@@ -1,9 +1,12 @@
 package middleware
 
 import (
+	"encoding/json"
 	"errors"
+	"math"
 	"necore/database"
 	"necore/model"
+	"strconv"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/golang-jwt/jwt/v5"
@@ -13,30 +16,22 @@ import (
 func validateTokenVersion(c *fiber.Ctx) error {
 	token, ok := c.Locals("user").(*jwt.Token)
 	if !ok || token == nil {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-			"error": "Unauthorized",
-		})
+		return invalidToken(c)
 	}
 
 	claims, ok := token.Claims.(jwt.MapClaims)
 	if !ok {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-			"error": "Invalid token",
-		})
+		return invalidToken(c)
 	}
 
 	username, ok := claims["name"].(string)
 	if !ok || username == "" {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-			"error": "Invalid token",
-		})
+		return invalidToken(c)
 	}
 
-	tokenVersionFloat, ok := claims["ver"].(float64)
+	tokenVersion, ok := getUintClaim(claims, "ver")
 	if !ok {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-			"error": "Invalid token",
-		})
+		return invalidToken(c)
 	}
 
 	var user model.User
@@ -46,9 +41,7 @@ func validateTokenVersion(c *fiber.Ctx) error {
 		First(&user).Error
 
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-			"error": "User no longer exists",
-		})
+		return invalidToken(c)
 	}
 
 	if err != nil {
@@ -57,15 +50,52 @@ func validateTokenVersion(c *fiber.Ctx) error {
 		})
 	}
 
-	if uint(tokenVersionFloat) != user.TokenVersion {
+	if tokenVersion != user.TokenVersion {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 			"error": "Token has been revoked",
 		})
 	}
 
-	// 将数据库中的最新用户信息放入 Locals，
-	// 后续权限中间件直接使用，不再信任 JWT 中的 group。
 	c.Locals("currentUser", user)
-
 	return c.Next()
+}
+
+func getUintClaim(claims jwt.MapClaims, key string) (uint, bool) {
+	value, ok := claims[key]
+	if !ok || value == nil {
+		return 0, false
+	}
+
+	switch v := value.(type) {
+	case float64:
+		if v < 0 || math.Trunc(v) != v {
+			return 0, false
+		}
+		return uint(v), true
+
+	case json.Number:
+		parsed, err := strconv.ParseUint(v.String(), 10, 64)
+		if err != nil {
+			return 0, false
+		}
+		return uint(parsed), true
+
+	case int:
+		if v < 0 {
+			return 0, false
+		}
+		return uint(v), true
+
+	case uint:
+		return v, true
+
+	default:
+		return 0, false
+	}
+}
+
+func invalidToken(c *fiber.Ctx) error {
+	return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+		"error": "Invalid token",
+	})
 }

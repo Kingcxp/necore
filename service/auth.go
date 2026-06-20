@@ -10,6 +10,8 @@ import (
 
 // Handlers
 
+const dummyPasswordHash = "$2a$12$KIX5gnQp2zfN8mjxJZ3v/eJQJjMKqQn2Cw4dHpRrv0vJ6X6WfR4he"
+
 func Login(c *fiber.Ctx) error {
 	// Parse Request Body
 	type LoginInput struct {
@@ -27,6 +29,8 @@ func Login(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Internal Server Error", "err": err})
 	} else if userModel == nil {
+		// Avoid timing attack
+		dao.CheckUserPassword(input.Password, dummyPasswordHash)
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid identity or password", "err": err})
 	}
 
@@ -93,7 +97,7 @@ func AddUser(c *fiber.Ctx) error {
 	}
 
 	if err := dao.AddUserByUsername(user.Username, user.Password); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 
 	return c.JSON(fiber.Map{})

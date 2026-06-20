@@ -1,6 +1,7 @@
 package dao
 
 import (
+	"fmt"
 	"necore/database"
 	"necore/model"
 )
@@ -18,13 +19,41 @@ func AddServer(server model.Server) error {
 }
 
 func UpdateServer(server model.Server) error {
-	db := database.GetServerDatabase()
-	var s *model.Server
-	db.Where(&model.Server{Id: server.Id}).First(&s)
-	return db.Model(&s).Updates(server).Error
+	result := database.GetServerDatabase().
+		Model(&model.Server{}).
+		Where("id = ?", server.Id).
+		Updates(map[string]any{
+			"name":           server.Name,
+			"icon":           server.Icon,
+			"description":    server.Description,
+			"realtime":       server.Realtime,
+			"online_map_url": server.OnlineMapUrl,
+			"server_url":     server.ServerUrl,
+		})
+
+	if result.Error != nil {
+		return result.Error
+	}
+
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("server not found")
+	}
+
+	return nil
 }
 
 func DeleteServer(id string) error {
-	db := database.GetServerDatabase()
-	return db.Where(&model.Server{Id: id}).Delete(&model.Server{}).Error
+	result := database.GetServerDatabase().
+		Where("id = ?", id).
+		Delete(&model.Server{})
+
+	if result.Error != nil {
+		return result.Error
+	}
+
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("server not found")
+	}
+
+	return nil
 }

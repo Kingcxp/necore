@@ -27,6 +27,9 @@ jobs:
         go get -u
         echo ${{github.ref_type}}
 
+    - name: Run Tests
+      run: go test
+
     - name: Build
       run: go build -o necore
 
