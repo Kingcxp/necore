@@ -16,8 +16,6 @@ func main() {
 		log.Fatalf("initialize configuration: %v", err)
 	}
 
-	log.Printf("using configuration file: %s", config.Path())
-
 	database.ConnectSqlite()
 	router.SetupRoutes()
 	app.Start()
