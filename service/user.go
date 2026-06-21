@@ -138,10 +138,6 @@ func UpdateUserPassword(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Internal server error"})
 	}
 
-	if err := dao.UpdateUserPermissions(payload.Id); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Internal server error"})
-	}
-
 	return c.SendStatus(fiber.StatusOK)
 
 }
